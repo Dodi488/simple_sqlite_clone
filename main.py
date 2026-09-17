@@ -66,9 +66,16 @@ ROWS_PER_PAGE = int(PAGE_SIZE / ROW_SIZE)
 TABLE_MAX_ROWS = ROWS_PER_PAGE * TABLE_MAX_PAGES 
 
 @dataclass
+class Pager:
+    file_descriptor: int = 0
+    file_length: int = 0
+    pages: list = field(default_factory=lambda: [None] * TABLE_MAX_PAGES)
+
+@dataclass
 class Table:
     num_rows: int = 0
-    pages: list = field(default_factory=lambda: [None] * TABLE_MAX_PAGES)
+    #pages: list = field(default_factory=lambda: [None] * TABLE_MAX_PAGES)
+    pager: Pager
 
 def print_row(row):
     print(f"{row.id}, {row.username}, {row.email}")
@@ -91,23 +98,61 @@ def deserialize_row(source, destination): # We can use struct in the future.
     destination.username = username_bytes.decode('ascii').rstrip('\x00')
     destination.email = email_bytes.decode('ascii').rstrip('\x00')
 
+    get_page(pager, page_num):
+        if page_num > TABLE_MAX_PAGES:
+            print("Tried to fetch page number out of bounds. {page_num} > {TABLE_MAX_PAGES}")
+            exit() # Not sure if to keep this here.
+
+        if pager.pages[page_num] == None:
+            # Cache miss. Allocate memory and load from file.
+            page = np.zeros(pager.file_length, dtype=uint8)
+
+            # We might save a partial page at the end of the file.
+            if pager.file_length % PAGE_SIZE:
+                num_pages += 1
+
+            if page_num <= num_pages:
+                os.lseek(pager.file_descriptor, page_num * PAGE_SIZE, SEEK_SET)
+                bytes_read = read(pager.file_descriptor, page, PAGE_SIZE)
+                if bytes_read == -1:
+                    print(f"Error reading file: {errno}")
+                    exit() # DOnt know if to keep this one.
+
+            pager.pages[page_num] = page
+        return pager.pages[page_num]
+
 def row_slot(table, row_num):
     page_num = int(row_num / ROWS_PER_PAGE)
-    if isinstance(table.pages[page_num], int) and table.pages[page_num] == 0:
-        table.pages[page_num] = np.zeros(PAGE_SIZE, dtype=np.uint8) # Only "allocate" memory when we try to access page.
+    #if isinstance(table.pages[page_num], int) and table.pages[page_num] == 0:
+    #    table.pages[page_num] = np.zeros(PAGE_SIZE, dtype=np.uint8) # Only "allocate" memory when we try to access page.
 
-    page = table.pages[page_num]
+    #page = table.pages[page_num]
+    page = get_page(table.pager, page_num)
 
     row_offset = row_num % ROWS_PER_PAGE
     byte_offset = row_offset * ROW_SIZE
     return page[byte_offset : byte_offset + ROW_SIZE]
 
-def new_table():
-    table = Table()
-    table.num_rows = 0
+def pager_open(filename):
+    #table = Table()
+    #table.num_rows = 0
+
+    with open(filename, "a+") as fd:
+        fd.read()
+
+    if fd == -1:
+        print("Unable to open file")
+        exit()
+
+    file_length = os.lseek(fd, 0, SEEK_END)
+
+    pager = np.zeros(len(Pager), dtype=uint8)
+    pager.file_descriptor = fd
+    pager.file_length = file_length
+
     for i in range(TABLE_MAX_PAGES):
-        table.pages[i] = 0
-    return table
+        pager.pages[i] = 0
+    return pager
 
 def free_table(table):
     for i in range(len(table.pages)):
