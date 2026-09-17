@@ -2,6 +2,7 @@ import numpy as np
 import struct
 from dataclasses import dataclass, field
 from enum import Enum
+import sys
 
 #InputBuffer = "cNn"
 
@@ -21,20 +22,22 @@ class MetaCommandResult(Enum):
 
 class PrepareResult(Enum):
     PREPARE_SUCCESS = 0
-    PREPARE_SYNTAX_ERROR = 1
-    PREPARE_UNRECOGNIZED_STATEMENT = 2
+    PREPARE_NEGATIVE_ID = 1
+    PREPARE_STRING_TOO_LONG = 2
+    PREPARE_SYNTAX_ERROR = 3
+    PREPARE_UNRECOGNIZED_STATEMENT = 4
 
 class StatementType(Enum):
     STATEMENT_INSERT = 0
     STATEMENT_SELECT = 1
 
-COLUMN_USER_NAME = 32
+COLUMN_USERNAME_SIZE = 32
 COLUMN_EMAIL_SIZE = 255
 
 @dataclass
 class Row:
     id: int = 0
-    username: str = " " * COLUMN_USER_NAME
+    username: str = " " * COLUMN_USERNAME_SIZE
     email: str = " " * COLUMN_EMAIL_SIZE
 
 @dataclass
@@ -121,6 +124,9 @@ def print_promt():
 def read_input(input_buffer):
     bytes_read = input()
 
+    if not sys.stdin.isatty():
+        print(bytes_read)
+
     input_buffer.buffer = bytes_read
     #input_buffer.buffer[-1] = 0
     input_buffer.buffer_length = len(bytes_read) - 1
@@ -144,20 +150,42 @@ def do_meta_command(input_buffer, table):
     else:
         return MetaCommandResult.META_COMMAND_UNRECOGNIZED_COMMAND
 
+def prepare_insert(input_buffer, statement):
+    statement.type = StatementType.STATEMENT_INSERT
+
+    total = input_buffer.buffer.split()
+
+    keyword = total[0]
+    id_string = total[1]
+    username = total[2]
+    email = total[3]
+
+    if id_string == None or username == None or email == None:
+        return PrepareResult.PREPARE_SYNTAX_ERROR
+
+    try:
+        id = int(id_string)
+    except ValueError:
+        return PrepareResult.PREPARE_SYNTAX_ERROR
+
+    if id < 0:
+        return PrepareResult.PREPARE_NEGATIVE_ID
+
+    if len(username) > COLUMN_USERNAME_SIZE:
+        return PrepareResult.PREPARE_STRING_TOO_LONG
+
+    if len(email) > COLUMN_EMAIL_SIZE:
+        return PREPARE_STRING_TOO_LONG
+
+    statement.row_to_insert.id = id
+    statement.row_to_insert.username = username
+    statement.row_to_insert.email = email
+
+    return PrepareResult.PREPARE_SUCCESS
+
 def prepare_statement(input_buffer, statement):
     if input_buffer.buffer.split()[0] == "insert":
-        statement.type = StatementType.STATEMENT_INSERT
-        try:
-            statement.row_to_insert.id = int(input_buffer.buffer.split()[1])
-        except ValueError:
-            return PrepareResult.PREPARE_SYNTAX_ERROR
-        statement.row_to_insert.username = input_buffer.buffer.split()[2]
-        statement.row_to_insert.email = input_buffer.buffer.split()[3]
-        input_buffer.buffer = f"insert {statement.row_to_insert.id} {statement.row_to_insert.username} {statement.row_to_insert.email}"
-        args_assigned = [statement.row_to_insert.id, statement.row_to_insert.username, statement.row_to_insert.email]
-        if len(args_assigned) < 3:
-            return PrepareResult.PREPARE_SYNTAX_ERROR
-        return PrepareResult.PREPARE_SUCCESS
+        return prepare_insert(input_buffer, statement)
 
     elif input_buffer.buffer.split()[0] == "select":
         statement.type = StatementType.STATEMENT_SELECT
@@ -210,6 +238,12 @@ def main(*args):
         match prepare_statement(input_buffer, statement):
             case PrepareResult.PREPARE_SUCCESS:
                 pass
+            case PrepareResult.PREPARE_NEGATIVE_ID:
+                print("ID must be positive.")
+                continue
+            case PrepareResult.PREPARE_STRING_TOO_LONG:
+                print("String is too long.")
+                continue
             case PrepareResult.PREPARE_SYNTAX_ERROR:
                 print("Syntax error. Could not parse statement.")
                 continue
