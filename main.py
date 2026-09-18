@@ -1,5 +1,5 @@
 import numpy as np
-import struct
+# import struct
 from dataclasses import dataclass, field
 from enum import Enum
 import os
@@ -78,6 +78,12 @@ class Table:
     pager: Pager
     num_rows: int = 0
 
+@dataclass
+class Cursor:
+    table: Table
+    end_of_table: bool
+    row_number: int = 0
+
 def print_row(row):
     print(f"{row.id}, {row.username}, {row.email}")
 
@@ -126,14 +132,29 @@ def get_page(pager, page_num):
         pager.pages[page_num] = page
     return pager.pages[page_num]
 
-def row_slot(table, row_num):
+def table_start(table: Table, row_num: int) -> Table:
+    # cursor = Cursor(table, 0, (table.num_rows == 0))
+    # return cursor
+    # return Cursor(table, 0, (table.num_rows == 0))
+    return Cursor(table, (table.num_rows == 0), 0)
+
+def table_end(table: Table) -> Cursor:
+    cursor = Cursor(table, True, table.num_rows)
+    return cursor
+
+def cursor_value(cursor: Cursor) -> int:
+    row_num = cursor.row_number
     page_num = int(row_num / ROWS_PER_PAGE)
-
-    page = get_page(table.pager, page_num)
-
+    page = get_page(cursor.table.pager, page_num)
     row_offset = row_num % ROWS_PER_PAGE
     byte_offset = row_offset * ROW_SIZE
+
     return page[byte_offset : byte_offset + ROW_SIZE]
+
+def cursor_advance(cursor: Cursor) -> None:
+    cursor.row_number += 1
+    if cursor.row_number >= cursor.table.num_rows:
+        cursor.end_of_table = True
 
 def pager_open(filename):
     fd = os.open(filename, os.O_RDWR | os.O_CREAT, stat.S_IWUSR | stat.S_IRUSR)
@@ -277,7 +298,7 @@ def prepare_insert(input_buffer, statement):
 
     return PrepareResult.PREPARE_SUCCESS
 
-def prepare_statement(input_buffer, statement):
+def prepare_statement(input_buffer: str, statement: Statement) -> PrepareResult:
     if input_buffer.buffer.split()[0] == "insert":
         return prepare_insert(input_buffer, statement)
 
@@ -288,25 +309,29 @@ def prepare_statement(input_buffer, statement):
     else:
         return PrepareResult.PREPARE_UNRECOGNIZED_STATEMENT
 
-def execute_insert(statement, table):
+def execute_insert(statement: Statement, table: Table) -> ExecuteResult:
     if table.num_rows >= TABLE_MAX_ROWS:
         return ExecuteResult.EXECUTE_TABLE_FULL
 
     row_to_insert = statement.row_to_insert
+    cursor = table_end(table)
 
-    serialize_row(row_to_insert, row_slot(table, table.num_rows))
+    serialize_row(row_to_insert, cursor_value(cursor))
     table.num_rows += 1
 
     return ExecuteResult.EXECUTE_SUCCESS
 
-def execute_select(statement, table):
+def execute_select(statement: Statement, table: Table) -> ExecuteResult:
+    cursor = table_start(table, statement.row_to_insert)
     row = Row()
-    for i in range(table.num_rows):
-        deserialize_row(row_slot(table, i), row)
+    while not cursor.end_of_table:
+        deserialize_row(cursor_value(cursor), row)
         print_row(row)
+        cursor_advance(cursor)
+
     return ExecuteResult.EXECUTE_SUCCESS
 
-def execute_statement(statement, table):
+def execute_statement(statement: Statement, table: Table) -> ExecuteResult:
     match statement.type:
         case StatementType.STATEMENT_INSERT:
             return execute_insert(statement, table)

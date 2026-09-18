@@ -111,14 +111,14 @@ class TestDatabase(unittest.TestCase):
 
     def test_prints_error_message_if_id_is_negative(self):
         script = [
-            "insert -1 cstack foo@bar.com",
+            "insert -1 foo foo@bar.com",
             "select",
             ".exit",
         ]
         result = run_script(script)
         
         self.assertEqual(result, [
-            "db > insert -1 cstack foo@bar.com",
+            "db > insert -1 foo foo@bar.com",
             "ID must be positive.",
             "db > select",
             "Executed.",
