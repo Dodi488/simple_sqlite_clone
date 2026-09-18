@@ -1,11 +1,12 @@
 import subprocess
 import unittest
+import os
 
 def run_script(commands):
     input_data = "\n".join(commands) + "\n"
     
     result = subprocess.run(
-        ["python3", "./main.py"],
+        ["python3", "./main.py", "mydb.db"],
         input=input_data,
         text=True,
         capture_output=True
@@ -14,6 +15,14 @@ def run_script(commands):
     return result.stdout.split("\n")
 
 class TestDatabase(unittest.TestCase):
+    def setUp(self):
+        if os.path.exists("mydb.db"):
+            os.remove("mydb.db")
+            
+    def tearDown(self):
+        if os.path.exists("mydb.db"):
+            os.remove("mydb.db")
+
     def test_basic_cases(self):
         result = run_script([
             "insert 1 foo foo@bar.com",
@@ -116,6 +125,31 @@ class TestDatabase(unittest.TestCase):
             "db > .exit",
             ""
         ])
+
+    def test_keeps_data_after_closing_connection(self):
+        result1 = run_script([
+            "insert 1 user1 person1@example.com",
+            ".exit",
+        ])
+        self.assertEqual(result1, [
+            "db > insert 1 user1 person1@example.com",
+            "Executed.",
+            "db > .exit",
+            ""
+        ])
+
+        result2 = run_script([
+            "select",
+            ".exit",
+        ])
+        self.assertEqual(result2, [
+            "db > select",
+            "1, user1, person1@example.com",
+            "Executed.",
+            "db > .exit",
+            ""
+        ])
+
 
 if __name__ == '__main__':
     unittest.main()

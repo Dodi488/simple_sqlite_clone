@@ -2,7 +2,9 @@ import numpy as np
 import struct
 from dataclasses import dataclass, field
 from enum import Enum
+import os
 import sys
+import stat
 
 #InputBuffer = "cNn"
 
@@ -73,9 +75,8 @@ class Pager:
 
 @dataclass
 class Table:
-    num_rows: int = 0
-    #pages: list = field(default_factory=lambda: [None] * TABLE_MAX_PAGES)
     pager: Pager
+    num_rows: int = 0
 
 def print_row(row):
     print(f"{row.id}, {row.username}, {row.email}")
@@ -98,35 +99,36 @@ def deserialize_row(source, destination): # We can use struct in the future.
     destination.username = username_bytes.decode('ascii').rstrip('\x00')
     destination.email = email_bytes.decode('ascii').rstrip('\x00')
 
-    get_page(pager, page_num):
-        if page_num > TABLE_MAX_PAGES:
-            print("Tried to fetch page number out of bounds. {page_num} > {TABLE_MAX_PAGES}")
-            exit() # Not sure if to keep this here.
+def get_page(pager, page_num):
+    if page_num > TABLE_MAX_PAGES:
+        print("Tried to fetch page number out of bounds. {page_num} > {TABLE_MAX_PAGES}")
+        exit() # Not sure if to keep this here.
 
-        if pager.pages[page_num] == None:
-            # Cache miss. Allocate memory and load from file.
-            page = np.zeros(pager.file_length, dtype=uint8)
+    if pager.pages[page_num] is None:
+        # Cache miss. Allocate memory and load from file.
+        page = np.zeros(PAGE_SIZE, dtype=np.uint8)
+        num_pages = pager.file_length / PAGE_SIZE
 
-            # We might save a partial page at the end of the file.
-            if pager.file_length % PAGE_SIZE:
-                num_pages += 1
+        # We might save a partial page at the end of the file.
+        if pager.file_length % PAGE_SIZE:
+            num_pages += 1
 
-            if page_num <= num_pages:
-                os.lseek(pager.file_descriptor, page_num * PAGE_SIZE, SEEK_SET)
-                bytes_read = read(pager.file_descriptor, page, PAGE_SIZE)
-                if bytes_read == -1:
-                    print(f"Error reading file: {errno}")
-                    exit() # DOnt know if to keep this one.
+        if page_num <= num_pages:
+            os.lseek(pager.file_descriptor, page_num * PAGE_SIZE, os.SEEK_SET)
+            bytes_read = os.read(pager.file_descriptor, PAGE_SIZE)
 
-            pager.pages[page_num] = page
-        return pager.pages[page_num]
+            if bytes_read == -1:
+                print(f"Error reading file: {errno}")
+                exit()
+            else:
+                page[:len(bytes_read)] = np.frombuffer(bytes_read, dtype=np.uint8)
+
+        pager.pages[page_num] = page
+    return pager.pages[page_num]
 
 def row_slot(table, row_num):
     page_num = int(row_num / ROWS_PER_PAGE)
-    #if isinstance(table.pages[page_num], int) and table.pages[page_num] == 0:
-    #    table.pages[page_num] = np.zeros(PAGE_SIZE, dtype=np.uint8) # Only "allocate" memory when we try to access page.
 
-    #page = table.pages[page_num]
     page = get_page(table.pager, page_num)
 
     row_offset = row_num % ROWS_PER_PAGE
@@ -134,24 +136,20 @@ def row_slot(table, row_num):
     return page[byte_offset : byte_offset + ROW_SIZE]
 
 def pager_open(filename):
-    #table = Table()
-    #table.num_rows = 0
-
-    with open(filename, "a+") as fd:
-        fd.read()
+    fd = os.open(filename, os.O_RDWR | os.O_CREAT, stat.S_IWUSR | stat.S_IRUSR)
 
     if fd == -1:
         print("Unable to open file")
         exit()
 
-    file_length = os.lseek(fd, 0, SEEK_END)
+    file_length = os.lseek(fd, 0, os.SEEK_END)
 
-    pager = np.zeros(len(Pager), dtype=uint8)
+    pager = Pager()
     pager.file_descriptor = fd
     pager.file_length = file_length
 
     for i in range(TABLE_MAX_PAGES):
-        pager.pages[i] = 0
+        pager.pages[i] = None
     return pager
 
 def free_table(table):
@@ -159,6 +157,16 @@ def free_table(table):
         table.pages[i] = None
     table.pages.clear()
     table.num_rows = 0
+
+def db_open(filename):
+    pager = pager_open(filename)
+    num_rows = pager.file_length // ROW_SIZE
+
+    table = Table(pager)
+    table.pager = pager
+    table.num_rows = num_rows
+
+    return table
 
 def new_input_buffer():
     return InputBuffer()
@@ -187,10 +195,51 @@ def close_input_buffer(input_buffer):
     input_buffer.buffer_length = 0
     input_buffer.input_length = 0
 
+def pager_flusher(pager, page_num, size):
+    if pager.pages[page_num] is None:
+        print("Tried to flush null page")
+        exit()
+
+    offset = os.lseek(pager.file_descriptor, page_num * PAGE_SIZE, os.SEEK_SET)
+
+    if offset == -1:
+        print(f"Error seeking: {errno}")
+        exit()
+
+    bytes_to_write = pager.pages[page_num][:size].tobytes()
+    bytes_written = os.write(pager.file_descriptor, bytes_to_write)
+
+    if bytes_written == -1:
+        print(f"Error writting: {errno}")
+        exit()
+
+def db_close(table):
+    pager = table.pager
+    num_full_pages = table.num_rows // ROWS_PER_PAGE
+
+    for i in range(num_full_pages):
+        if pager.pages[i] is None:
+            continue
+        pager_flusher(pager, i, PAGE_SIZE)
+        pager.pages[i] = None
+
+    # There may be a partial page to write to the end of the file
+    # This should not be needed after we switch to a B-tree
+    num_additional_rows = table.num_rows % ROWS_PER_PAGE
+    if num_additional_rows > 0:
+        page_num = num_full_pages
+        if pager.pages[page_num] is not None:
+            pager_flusher(pager, page_num, num_additional_rows * ROW_SIZE)
+
+    for i in range(TABLE_MAX_PAGES):
+        page = pager.pages[i]
+        if page is not None:
+            pager.pages[i] = None
+
 def do_meta_command(input_buffer, table):
     if input_buffer.buffer == ".exit":
         close_input_buffer(input_buffer)
-        free_table(table)
+        db_close(table)
         exit()
     else:
         return MetaCommandResult.META_COMMAND_UNRECOGNIZED_COMMAND
@@ -265,8 +314,10 @@ def execute_statement(statement, table):
             return execute_select(statement, table)
 
 def main(*args):
+    filename = sys.argv[1]
+    table = db_open(filename)
+
     input_buffer = new_input_buffer()
-    table = new_table()
     while True:
         print_promt()
         read_input(input_buffer)
