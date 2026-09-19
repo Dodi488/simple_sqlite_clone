@@ -168,9 +168,9 @@ class TestDatabase(unittest.TestCase):
             "db > .btree",
             "Tree:",
             "leaf (size 3)",
-            "  - 0 : 3",
-            "  - 1 : 1",
-            "  - 2 : 2",
+            "  - 0 : 1",
+            "  - 1 : 2",
+            "  - 2 : 3",
             "db > .exit",
             ""
         ])
@@ -190,6 +190,21 @@ class TestDatabase(unittest.TestCase):
             "LEAF_NODE_SPACE_FOR_CELLS: 4086",
             "LEAF_NODE_MAX_CELLS: 13",
             "leaf (size 0)",
+            "db > .exit",
+            ""
+        ])
+
+    def test_duplicate_key(self):
+        result = run_script([
+            "insert 1 user1 person1@example.com",
+            "insert 1 user1 person1@example.com",
+            ".exit",
+        ])
+        self.assertEqual(result, [
+            "db > insert 1 user1 person1@example.com",
+            "Executed.",
+            "db > insert 1 user1 person1@example.com",
+            "Error: Duplicate key.",
             "db > .exit",
             ""
         ])

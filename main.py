@@ -16,7 +16,8 @@ class InputBuffer:
 
 class ExecuteResult(Enum):
     EXECUTE_SUCCESS = 0
-    EXECUTE_TABLE_FULL = 1
+    EXECUTE_DUPLICATE_KEY = 1
+    EXECUTE_TABLE_FULL = 2
 
 class MetaCommandResult(Enum):
     META_COMMAND_SUCCESS = 0
@@ -119,6 +120,14 @@ LEAF_NODE_CELL_SIZE = LEAF_NODE_KEY_SIZE + LEAF_NODE_VALUE_SIZE
 LEAF_NODE_SPACE_FOR_CELLS = PAGE_SIZE - LEAF_NODE_HEADER_SIZE
 LEAF_NODE_MAX_CELLS = LEAF_NODE_SPACE_FOR_CELLS // LEAF_NODE_CELL_SIZE
 
+def get_node_type(node: Any) -> NodeType: # This can be optimize.
+    value = node[NODE_TYPE_OFFSET]
+    return NodeType(value)
+
+def set_node_type(node: Any, type: type) -> None: # This can also be optimize.
+    # We have define value to uint8 and assing it the value of type and assign value to (node + NODE_TYPE_OFFSET).
+    return np.uint8(node)
+
 def leaf_node_num_cells(node: np.ndarray) -> int:
     # return node[LEAF_NODE_NUM_CELLS_OFFSET]
     # return node + LEAF_NODE_NUM_CELLS_OFFSET
@@ -187,11 +196,36 @@ def deserialize_row(source, destination): # We can use struct in the future.
     destination.username = username_bytes.decode('ascii').rstrip('\x00')
     destination.email = email_bytes.decode('ascii').rstrip('\x00')
 
-def initialize_leaf_node(node: np.ndarray) -> None:
-    bytes = (0).to_bytes(LEAF_NODE_NUM_CELLS_SIZE, byteorder="little")
-    node[LEAF_NODE_NUM_CELLS_OFFSET : LEAF_NODE_NUM_CELLS_OFFSET + LEAF_NODE_NUM_CELLS_SIZE] = np.frombuffer(bytes, dtype=np.uint8)
+def initialize_leaf_node(node: np.ndarray) -> None: # We may have to check this later.
+    # We have define value to uint8 and assing it the value of type and assign value to (node + NODE_TYPE_OFFSET) "set_node_type(node, NodeType.NODE_LEAF.value)".
+    node[NODE_TYPE_OFFSET] = np.uint8(NodeType.NODE_LEAF.value)
+    bytes_val = (0).to_bytes(LEAF_NODE_NUM_CELLS_SIZE, byteorder="little")
+    node[LEAF_NODE_NUM_CELLS_OFFSET : LEAF_NODE_NUM_CELLS_OFFSET + LEAF_NODE_NUM_CELLS_SIZE] = np.frombuffer(bytes_val, dtype=np.uint8)
 
-def get_page(pager: Pager, page_num: int) -> list:
+def leaf_node_find(table: Table, page_num: np.uint32, key: np.uint32) -> Cursor:
+    node = get_page(table.pager, page_num)
+    num_cells = np.uint32(leaf_node_num_cells(node))
+
+    cursor = Cursor(table, False, page_num, 0)
+
+    # Binary search
+    min_index = np.uint32(0)
+    one_past_max_index = num_cells
+    while one_past_max_index != min_index:
+        index = np.uint32((min_index + one_past_max_index) / 2)
+        key_at_index = np.uint32(leaf_node_key(node, index))
+        if key == key_at_index[0]:
+            cursor.cell_num = index
+            return cursor
+        if key < key_at_index[0]:
+            one_past_max_index = index
+        else:
+            min_index = index + 1
+
+    cursor.cell_num = min_index
+    return cursor
+
+def get_page(pager: Pager, page_num: int) -> Any:
     if page_num > TABLE_MAX_PAGES:
         print("Tried to fetch page number out of bounds. {page_num} > {TABLE_MAX_PAGES}")
         exit() # Not sure if to keep this here.
@@ -228,11 +262,18 @@ def table_start(table: Table, row_num: int) -> Table:
     cursor = Cursor(table, (num_cells == 0), table.root_page_num, 0)
     return cursor
 
-def table_end(table: Table) -> Cursor:
-    root_node = get_page(table.pager, table.root_page_num)
-    num_cells = leaf_node_num_cells(root_node)
-    cursor = Cursor(table, True, table.root_page_num, num_cells)
-    return cursor
+# Return the position of the given key.
+# If the key is not present, return the position where it should be inserted.
+
+def table_find(table: Table, key: np.uint32) -> Cursor:
+    root_page_num = np.uint32(table.root_page_num)
+    root_node = get_page(table.pager, root_page_num)
+
+    if get_node_type(root_node) == NodeType.NODE_LEAF:
+        return leaf_node_find(table, root_page_num, key)
+    else:
+        print("Need to implement searching an internal node")
+        exit()
 
 def cursor_value(cursor: Cursor) -> int:
     page_num = cursor.page_num
@@ -415,9 +456,6 @@ def leaf_node_insert(cursor: Cursor, key: int, value: Row) ->None: # We have to 
         exit()
 
     if cursor.cell_num < num_cells:
-        # Make room for new cell
-        # for i in range(num_cells, cursor.cell_num):
-        #    ctypes.memmove(leaf_node_cell(node, i), leaf_node_cell(node, i - 1), LEAF_NODE_CELL_SIZE)
         src_start = get_leaf_node_cell_offset(cursor.cell_num)
         src_end = get_leaf_node_cell_offset(num_cells)
         dest_start = src_start + LEAF_NODE_CELL_SIZE
@@ -425,10 +463,6 @@ def leaf_node_insert(cursor: Cursor, key: int, value: Row) ->None: # We have to 
 
         node[dest_start:dest_end] = node[src_start:src_end]
 
-    # cells = leaf_node_num_cells(node)
-    # cells += 1
-    # keys = leaf_node_key(node, cursor.cell_num)
-    # keys = key
     # serialize_row(value, leaf_node_value(node, cursor.cell_num))
 
     set_leaf_node_num_cells(node, num_cells + 1)
@@ -437,11 +471,18 @@ def leaf_node_insert(cursor: Cursor, key: int, value: Row) ->None: # We have to 
 
 def execute_insert(statement: Statement, table: Table) -> ExecuteResult:
     node = get_page(table.pager, table.root_page_num)
-    if leaf_node_num_cells(node) >= LEAF_NODE_MAX_CELLS:
+    num_cells = leaf_node_num_cells(node)
+    if num_cells >= LEAF_NODE_MAX_CELLS:
         return ExecuteResult.EXECUTE_TABLE_FULL
 
     row_to_insert = statement.row_to_insert
-    cursor = table_end(table)
+    key_to_insert = row_to_insert.id
+    cursor = table_find(table, key_to_insert)
+
+    if cursor.cell_num < num_cells:
+        key_at_index = leaf_node_key(node, cursor.cell_num)
+        if key_at_index[0] == key_to_insert:
+            return ExecuteResult.EXECUTE_DUPLICATE_KEY
 
     leaf_node_insert(cursor, row_to_insert.id, row_to_insert)
 
@@ -502,6 +543,9 @@ def main(*args):
         match state: # execute_statemnt(statement, table):
             case ExecuteResult.EXECUTE_SUCCESS:
                 print("Executed.")
+                continue
+            case ExecuteResult.EXECUTE_DUPLICATE_KEY:
+                print("Error: Duplicate key.")
                 continue
             case ExecuteResult.EXECUTE_TABLE_FULL:
                 print("Error: Table full.")
