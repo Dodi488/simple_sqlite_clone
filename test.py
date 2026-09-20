@@ -68,7 +68,7 @@ class TestDatabase(unittest.TestCase):
         
         result = run_script(script)
         
-        self.assertEqual(result[-3], "Error: Table full.")
+        self.assertEqual(result[-2], "Need to implement searching an internal node")
 
     def test_allows_inserting_strings_that_are_maximum_length(self):
         long_username = "a" * 32
@@ -167,10 +167,10 @@ class TestDatabase(unittest.TestCase):
             "Executed.",
             "db > .btree",
             "Tree:",
-            "leaf (size 3)",
-            "  - 0 : 1",
-            "  - 1 : 2",
-            "  - 2 : 3",
+            "- leaf (size 3)",
+            "  - 1",
+            "  - 2",
+            "  - 3",
             "db > .exit",
             ""
         ])
@@ -189,7 +189,6 @@ class TestDatabase(unittest.TestCase):
             "LEAF_NODE_CELL_SIZE: 295", # It should be 297.
             "LEAF_NODE_SPACE_FOR_CELLS: 4086",
             "LEAF_NODE_MAX_CELLS: 13",
-            "leaf (size 0)",
             "db > .exit",
             ""
         ])
@@ -206,6 +205,67 @@ class TestDatabase(unittest.TestCase):
             "db > insert 1 user1 person1@example.com",
             "Error: Duplicate key.",
             "db > .exit",
+            ""
+        ])
+
+    def test_print_structure_of_a_3_leaf_btree(self):
+        script = [f"insert {i} person{i} person{i}@example.com" for i in range(1, 15)]
+        script.append(".btree")
+        script.append("insert 15 person15 person15@example.com")
+        script.append(".exit")
+        result = run_script(script)
+        self.assertEqual(result, [
+            "db > insert 1 person1 person1@example.com",
+            "Executed.",
+            "db > insert 2 person2 person2@example.com",
+            "Executed.",
+            "db > insert 3 person3 person3@example.com",
+            "Executed.",
+            "db > insert 4 person4 person4@example.com",
+            "Executed.",
+            "db > insert 5 person5 person5@example.com",
+            "Executed.",
+            "db > insert 6 person6 person6@example.com",
+            "Executed.",
+            "db > insert 7 person7 person7@example.com",
+            "Executed.",
+            "db > insert 8 person8 person8@example.com",
+            "Executed.",
+            "db > insert 9 person9 person9@example.com",
+            "Executed.",
+            "db > insert 10 person10 person10@example.com",
+            "Executed.",
+            "db > insert 11 person11 person11@example.com",
+            "Executed.",
+            "db > insert 12 person12 person12@example.com",
+            "Executed.",
+            "db > insert 13 person13 person13@example.com",
+            "Executed.",
+            "db > insert 14 person14 person14@example.com",
+            "Executed.",
+            "db > .btree",
+            "Tree:",
+            "- internal (size 1)",
+            "  - leaf (size 7)",
+            "    - 1",
+            "    - 2",
+            "    - 3",
+            "    - 4",
+            "    - 5",
+            "    - 6",
+            "    - 7",
+            "  - key 1",
+            "  - leaf (size 7)",
+            "    - 8",
+            "    - 9",
+            "    - 10",
+            "    - 11",
+            "    - 12",
+            "    - 13",
+            "    - 14",
+            "db > insert 15 person15 person15@example.com",
+            "Need to implement searching an internal node",
+            # "db > .exit",
             ""
         ])
 

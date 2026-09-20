@@ -5,6 +5,7 @@ from enum import Enum
 import os
 import sys
 import stat
+from typing import Any
 
 #InputBuffer = "cNn"
 
@@ -100,7 +101,19 @@ IS_ROOT_OFFSET = NODE_TYPE_SIZE
 # PARENT_POINTER_SIZE = sys.getsizeof(np.uint32)
 PARENT_POINTER_SIZE = 4
 PARENT_POINTER_OFFSET = IS_ROOT_OFFSET + IS_ROOT_SIZE
-COMMON_NODE_HEADER_SIZE = NODE_TYPE_SIZE + IS_ROOT_SIZE + PARENT_POINTER_SIZE
+COMMON_NODE_HEADER_SIZE = np.uint32(NODE_TYPE_SIZE + IS_ROOT_SIZE + PARENT_POINTER_SIZE)
+
+# Internal Node Header Layout
+INTERNAL_NODE_NUM_KEYS_SIZE = np.uint32(4)
+INTERNAL_NODE_NUM_KEYS_OFFSET = COMMON_NODE_HEADER_SIZE
+INTERNAL_NODE_RIGHT_CHILD_SIZE = np.uint32(4)
+INTERNAL_NODE_RIGHT_CHILD_OFFSET = INTERNAL_NODE_NUM_KEYS_OFFSET + INTERNAL_NODE_NUM_KEYS_SIZE
+INTERNAL_NODE_HEADER_SIZE = COMMON_NODE_HEADER_SIZE + INTERNAL_NODE_NUM_KEYS_SIZE + INTERNAL_NODE_RIGHT_CHILD_SIZE
+
+# Internal Node Body Layout
+INTERNAL_NODE_KEY_SIZE = np.uint32(4)
+INTERNAL_NODE_CHILD_SIZE = np.uint32(4)
+INTERNAL_NODE_CELL_SIZE = INTERNAL_NODE_CHILD_SIZE + INTERNAL_NODE_KEY_SIZE
 
 # Leaf Node Header Layout
 
@@ -119,18 +132,53 @@ LEAF_NODE_VALUE_OFFSET = LEAF_NODE_KEY_OFFSET + LEAF_NODE_KEY_SIZE
 LEAF_NODE_CELL_SIZE = LEAF_NODE_KEY_SIZE + LEAF_NODE_VALUE_SIZE
 LEAF_NODE_SPACE_FOR_CELLS = PAGE_SIZE - LEAF_NODE_HEADER_SIZE
 LEAF_NODE_MAX_CELLS = LEAF_NODE_SPACE_FOR_CELLS // LEAF_NODE_CELL_SIZE
+LEAF_NODE_RIGHT_SPLIT_COUNT = np.uint32((LEAF_NODE_MAX_CELLS + 1) / 2)
+LEAF_NODE_LEFT_SPLIT_COUNT = np.uint32((LEAF_NODE_MAX_CELLS + 1) - LEAF_NODE_RIGHT_SPLIT_COUNT )
 
-def get_node_type(node: Any) -> NodeType: # This can be optimize.
+def get_node_type(node: Any) -> NodeType:
     value = node[NODE_TYPE_OFFSET]
     return NodeType(value)
 
-def set_node_type(node: Any, type: type) -> None: # This can also be optimize.
-    # We have define value to uint8 and assing it the value of type and assign value to (node + NODE_TYPE_OFFSET).
-    return np.uint8(node)
+def set_node_type(node: Any, type: NodeType) -> None: # This can also be optimize.
+    node[NODE_TYPE_OFFSET] = np.uint8(type.value)
+
+def is_node_root(node: Any) -> bool:
+    value = node[IS_ROOT_OFFSET]
+    return bool(value)
+
+def set_node_root(node: Any, is_root: bool):
+    value = np.uint8(is_root)
+    node[IS_ROOT_OFFSET] = value
+    return node[IS_ROOT_OFFSET]
+
+def internal_node_num_keys(node: Any) -> np.uint32:
+    bytes = node[INTERNAL_NODE_NUM_KEYS_OFFSET : INTERNAL_NODE_NUM_KEYS_OFFSET + INTERNAL_NODE_NUM_KEYS_SIZE].tobytes()
+    return int.from_bytes(bytes, byteorder="little")
+
+def internal_node_right_child(node: Any) -> np.uint32:
+    bytes = node[INTERNAL_NODE_RIGHT_CHILD_OFFSET : INTERNAL_NODE_RIGHT_CHILD_OFFSET + INTERNAL_NODE_RIGHT_CHILD_SIZE].tobytes()
+    return int.from_bytes(bytes, byteorder="little")
+
+def internal_node_cell(node: Any, cell_num: np.uint32) -> np.uint32:
+    cell = INTERNAL_NODE_HEADER_SIZE + cell_num * INTERNAL_NODE_CELL_SIZE
+    return node[cell : cell + INTERNAL_NODE_CELL_SIZE]
+
+def internal_node_child(node: Any, child_num: np.uint32) -> np.uint32:
+    num_keys = np.uint32(internal_node_num_keys(node))
+    if child_num > num_keys:
+        print(f"Tried to access child_num {child_num} > num_keys {num_keys}")
+        exit()
+    elif child_num == num_keys:
+        return internal_node_right_child(node)
+    else:
+        cell = internal_node_cell(node, child_num)
+        return int.from_bytes(cell[:INTERNAL_NODE_CHILD_SIZE].tobytes(), byteorder="little")
+
+def internal_node_key(node: Any, key_num: np.uint32) -> np.uint32:
+    cell = internal_node_cell(node, key_num)
+    return cell[INTERNAL_NODE_CHILD_SIZE : INTERNAL_NODE_CHILD_SIZE + INTERNAL_NODE_KEY_SIZE]
 
 def leaf_node_num_cells(node: np.ndarray) -> int:
-    # return node[LEAF_NODE_NUM_CELLS_OFFSET]
-    # return node + LEAF_NODE_NUM_CELLS_OFFSET
     num_cells_bytes = node[LEAF_NODE_NUM_CELLS_OFFSET : LEAF_NODE_NUM_CELLS_OFFSET + LEAF_NODE_NUM_CELLS_SIZE].tobytes()
     return int.from_bytes(num_cells_bytes, byteorder="little")
 
@@ -146,6 +194,15 @@ def leaf_node_value(node: np.ndarray, cell_num: int) -> np.ndarray:
     cell = leaf_node_cell(node, cell_num)
     return cell[LEAF_NODE_KEY_SIZE : LEAF_NODE_KEY_SIZE + LEAF_NODE_VALUE_SIZE]
 
+def get_node_max_key(pager: Pager, node: Any) -> np.uint32:
+    match get_node_type(node):
+        case NodeType.NODE_INTERNAL:
+            bytes = internal_node_key(node, internal_node_num_keys(node) - 1).tobytes()
+            return int.from_bytes(bytes, byteorder="little")
+        case NodeType.NODE_LEAF:
+            bytes = leaf_node_key(node, leaf_node_num_cells(node) - 1).tobytes()
+            return int.from_bytes(bytes, byteorder="little")
+
 def print_constants() -> None:
     print(f"ROW_SIZE: {ROW_SIZE}")
     print(f"COMMON_NODE_HEADER_SIZE: {COMMON_NODE_HEADER_SIZE}")
@@ -154,12 +211,35 @@ def print_constants() -> None:
     print(f"LEAF_NODE_SPACE_FOR_CELLS: {LEAF_NODE_SPACE_FOR_CELLS}")
     print(f"LEAF_NODE_MAX_CELLS: {LEAF_NODE_MAX_CELLS}")
 
-def print_leaf_node(node: int) -> None:
-    num_cells = leaf_node_num_cells(node)
-    print(f"leaf (size {num_cells})")
-    for i in range(num_cells):
-        key = leaf_node_key(node, i)
-        print(f"  - {i} : {key[0]}")
+def indent(level: np.uint32) -> None:
+    for i in range(level):
+        print("  ", end="")
+
+def print_tree(pager: Pager, page_num: np.uint32, indentation_level: np.uint32) -> None:
+    node = get_page(pager, page_num)
+    
+    match get_node_type(node):
+        case NodeType.NODE_LEAF:
+            num_keys = np.uint32(leaf_node_num_cells(node))
+            indent(indentation_level)
+            print(f"- leaf (size {num_keys})")
+            for i in range(num_keys):
+                indent(indentation_level + 1)
+                key = int.from_bytes(leaf_node_key(node, i).tobytes(), byteorder="little")
+                print(f"- {key}")
+        case NodeType.NODE_INTERNAL:
+            num_keys = np.uint32(internal_node_num_keys(node))
+            indent(indentation_level)
+            print(f"- internal (size {num_keys})")
+            for i in range(num_keys):
+                child = np.uint32(internal_node_child(node, i))
+                print_tree(pager, child, indentation_level + 1)
+
+                indent(indentation_level + 1)
+                key = int.from_bytes(leaf_node_key(node, i).tobytes(), byteorder="little")
+                print(f"- key {key}")
+            child = np.uint32(internal_node_right_child(node))
+            print_tree(pager, child, indentation_level + 1)
 
 # THIS FUNCTIONS ONLY EXISTS BECAUSE IN PYTHON I CAN'T DIRECTLY MODIFY THE VALUE OF A MEMORY ADDRESS, ONLY A COPY.
 def get_leaf_node_cell_offset(cell_num: int) -> int:
@@ -196,11 +276,19 @@ def deserialize_row(source, destination): # We can use struct in the future.
     destination.username = username_bytes.decode('ascii').rstrip('\x00')
     destination.email = email_bytes.decode('ascii').rstrip('\x00')
 
-def initialize_leaf_node(node: np.ndarray) -> None: # We may have to check this later.
-    # We have define value to uint8 and assing it the value of type and assign value to (node + NODE_TYPE_OFFSET) "set_node_type(node, NodeType.NODE_LEAF.value)".
+def initialize_leaf_node(node: np.ndarray) -> None:
     node[NODE_TYPE_OFFSET] = np.uint8(NodeType.NODE_LEAF.value)
+    node[IS_ROOT_OFFSET] = np.uint8(False)
+
     bytes_val = (0).to_bytes(LEAF_NODE_NUM_CELLS_SIZE, byteorder="little")
     node[LEAF_NODE_NUM_CELLS_OFFSET : LEAF_NODE_NUM_CELLS_OFFSET + LEAF_NODE_NUM_CELLS_SIZE] = np.frombuffer(bytes_val, dtype=np.uint8)
+
+def initialize_internal_node(node: Any) -> None:
+    set_node_type(node, NodeType.NODE_INTERNAL)
+    set_node_root(node, False)
+
+    bytes = (0).to_bytes(int(INTERNAL_NODE_NUM_KEYS_SIZE), byteorder="little")
+    node[INTERNAL_NODE_NUM_KEYS_OFFSET : INTERNAL_NODE_NUM_KEYS_OFFSET + INTERNAL_NODE_NUM_KEYS_SIZE] = np.frombuffer(bytes, dtype=np.uint8)
 
 def leaf_node_find(table: Table, page_num: np.uint32, key: np.uint32) -> Cursor:
     node = get_page(table.pager, page_num)
@@ -212,12 +300,13 @@ def leaf_node_find(table: Table, page_num: np.uint32, key: np.uint32) -> Cursor:
     min_index = np.uint32(0)
     one_past_max_index = num_cells
     while one_past_max_index != min_index:
-        index = np.uint32((min_index + one_past_max_index) / 2)
-        key_at_index = np.uint32(leaf_node_key(node, index))
-        if key == key_at_index[0]:
+        index = np.uint32((min_index + one_past_max_index) // 2)
+        key_at_index = int.from_bytes(leaf_node_key(node, index).tobytes(), byteorder="little")
+        key_at_index = np.uint32(key_at_index)
+        if key == key_at_index:
             cursor.cell_num = index
             return cursor
-        if key < key_at_index[0]:
+        if key < key_at_index:
             one_past_max_index = index
         else:
             min_index = index + 1
@@ -233,21 +322,20 @@ def get_page(pager: Pager, page_num: int) -> Any:
     if pager.pages[page_num] is None:
         # Cache miss. Allocate memory and load from file.
         page = np.zeros(PAGE_SIZE, dtype=np.uint8)
-        num_pages = pager.file_length / PAGE_SIZE
+        num_pages = pager.file_length // PAGE_SIZE
 
         # We might save a partial page at the end of the file.
         if pager.file_length % PAGE_SIZE:
             num_pages += 1
 
         if page_num <= num_pages:
-            os.lseek(pager.file_descriptor, page_num * PAGE_SIZE, os.SEEK_SET)
-            bytes_read = os.read(pager.file_descriptor, PAGE_SIZE)
-
-            if bytes_read == -1:
+            try:
+                os.lseek(pager.file_descriptor, page_num * PAGE_SIZE, os.SEEK_SET)
+                bytes_read = os.read(pager.file_descriptor, PAGE_SIZE)
+                page[:len(bytes_read)] = np.frombuffer(bytes_read, dtype=np.uint8)
+            except OSError as errno:
                 print(f"Error reading file: {errno}")
                 exit()
-            else:
-                page[:len(bytes_read)] = np.frombuffer(bytes_read, dtype=np.uint8)
 
         pager.pages[page_num] = page
 
@@ -256,7 +344,7 @@ def get_page(pager: Pager, page_num: int) -> Any:
 
     return pager.pages[page_num]
 
-def table_start(table: Table, row_num: int) -> Table:
+def table_start(table: Table) -> Cursor:
     root_node = get_page(table.pager, table.root_page_num)
     num_cells = leaf_node_num_cells(root_node)
     cursor = Cursor(table, (num_cells == 0), table.root_page_num, 0)
@@ -301,7 +389,7 @@ def pager_open(filename: str) -> Pager:
     pager = Pager()
     pager.file_descriptor = fd
     pager.file_length = file_length
-    pager.num_pages = file_length / PAGE_SIZE
+    pager.num_pages = file_length // PAGE_SIZE
 
     if file_length % PAGE_SIZE != 0:
         print(file_length)
@@ -313,10 +401,9 @@ def pager_open(filename: str) -> Pager:
     return pager
 
 def free_table(table: Table) -> None:
-    for i in range(len(table.pages)):
-        table.pages[i] = None
-    table.pages.clear()
-    table.num_rows = 0
+    if table.pager and table.pager.pages:
+        for i in range(len(table.pages)):
+            table.pages.pages[i] = None
 
 def db_open(filename: str) -> Table:
     pager = pager_open(filename)
@@ -329,10 +416,11 @@ def db_open(filename: str) -> Table:
         # New database file. Initialize page 0 as leaf node.
         root_node = get_page(pager, 0)
         initialize_leaf_node(root_node)
+        set_node_root(root_node, True)
 
     return table
 
-def new_input_buffer() -> None:
+def new_input_buffer() -> Input_Buffer:
     return InputBuffer()
 
 def print_promt() -> None:
@@ -353,7 +441,7 @@ def read_input(input_buffer: str) -> None:
 
     return bytes_read
 
-def close_input_buffer(input_buffer: str) -> None:
+def close_input_buffer(input_buffer: InputBuffer) -> None:
     input_buffer.buffer = ""
     input_buffer.buffer_length = 0
     input_buffer.input_length = 0
@@ -379,7 +467,7 @@ def pager_flusher(pager: Pager, page_num: int) -> None:
 def db_close(table: Table) -> None:
     pager = table.pager
 
-    for i in range(int(pager.num_pages)): # Here pager.num_pages is a float, we have to investigate why?
+    for i in range(pager.num_pages):
         if pager.pages[i] is None:
             continue
         pager_flusher(pager, i)
@@ -392,12 +480,12 @@ def do_meta_command(input_buffer: str, table: Table) -> MetaCommandResult:
         exit()
     elif input_buffer.buffer == ".btree":
         print("Tree:")
-        print_leaf_node(get_page(table.pager, 0))
+        print_tree(table.pager, 0, 0)
         return MetaCommandResult.META_COMMAND_SUCCESS
     elif input_buffer.buffer == ".constants":
         print("Constants:")
         print_constants()
-        print_leaf_node(get_page(table.pager, 0))
+        # print_tree(get_page(table.pager, 0))
         return MetaCommandResult.META_COMMAND_SUCCESS
     else:
         return MetaCommandResult.META_COMMAND_UNRECOGNIZED_COMMAND
@@ -446,14 +534,99 @@ def prepare_statement(input_buffer: str, statement: Statement) -> PrepareResult:
     else:
         return PrepareResult.PREPARE_UNRECOGNIZED_STATEMENT
 
+# Until we start recycling free pages, new pages will always go onto the end of the database file
+
+def get_unused_page_num(pager: Pager) -> np.uint32:
+    return np.uint32(pager.num_pages)
+
+def create_new_root(table: Table, right_child_page_num: np.uint32) -> None:
+    # Handle splitting the root.
+    # Old root copied to new page, becomes left child.
+    # Address of right child passed in.
+    # Re-initialize root page to contain the new root node.
+    # New root node points to two children.
+
+    root = get_page(table.pager, table.root_page_num)
+    right_child = get_page(table.pager, right_child_page_num)
+    left_child_page_num = np.uint32(get_unused_page_num(table.pager))
+    left_child = get_page(table.pager, left_child_page_num)
+
+    # Left child has data copied from old root
+    left_child[:] = root[:]
+    set_node_root(left_child, False)
+
+    # Root node is a new internal node with one key and two children
+    initialize_internal_node(root)
+    set_node_root(root, True)
+
+    # WE HAVE TO CHECK THIS, MAYBE USE HELPER FUNCTIONS?
+    # Check this later:
+    # Set internal node num keys to 1
+    num_keys_bytes = (1).to_bytes(INTERNAL_NODE_NUM_KEYS_SIZE, byteorder="little")
+    root[INTERNAL_NODE_NUM_KEYS_OFFSET : INTERNAL_NODE_NUM_KEYS_OFFSET + INTERNAL_NODE_NUM_KEYS_SIZE] = np.frombuffer(num_keys_bytes, dtype=np.uint8)
+
+    # Set left child pointer
+    left_child_bytes = int(left_child_page_num).to_bytes(INTERNAL_NODE_CHILD_SIZE, byteorder="little")
+    cell_offset = INTERNAL_NODE_HEADER_SIZE 
+    root[cell_offset : cell_offset + INTERNAL_NODE_CHILD_SIZE] = np.frombuffer(left_child_bytes, dtype=np.uint8)
+
+    # Set key
+    left_child_max_key = get_node_max_key(table.pager, left_child)
+    key_bytes = int(left_child_max_key).to_bytes(INTERNAL_NODE_KEY_SIZE, byteorder="little")
+    root[cell_offset + INTERNAL_NODE_CHILD_SIZE : cell_offset + INTERNAL_NODE_CHILD_SIZE + INTERNAL_NODE_KEY_SIZE] = np.frombuffer(key_bytes, dtype=np.uint8)
+
+    # Set right child pointer
+    right_child_bytes = int(right_child_page_num).to_bytes(INTERNAL_NODE_RIGHT_CHILD_SIZE, byteorder="little")
+    root[INTERNAL_NODE_RIGHT_CHILD_OFFSET : INTERNAL_NODE_RIGHT_CHILD_OFFSET + INTERNAL_NODE_RIGHT_CHILD_SIZE] = np.frombuffer(right_child_bytes, dtype=np.uint8)
+    # END OF WHAT WE HAVE TO CHECK.
+
+def leaf_node_split_and_insert(cursor: Cursor, key: np.uint32, value: Row) -> None:
+    # Create a new node and move half the cells over.
+    # Insert the new value in one of the two nodes.
+    # Update parent or create a new parent.
+
+    old_node = get_page(cursor.table.pager, cursor.page_num)
+    new_page_num = np.uint32(get_unused_page_num(cursor.table.pager))
+    new_node = get_page(cursor.table.pager, new_page_num)
+    initialize_leaf_node(new_node)
+
+    # All existing keys plus new key should be divided evenly between old (left) and new (right) nodes.
+    # Starting from the right, move each ket to correct position.
+
+    for i in range(LEAF_NODE_MAX_CELLS, -1, -1):
+        if i >= LEAF_NODE_LEFT_SPLIT_COUNT:
+            destination_node = new_node
+        else:
+            destination_node = old_node
+
+        index_within_node = np.uint32(i % LEAF_NODE_LEFT_SPLIT_COUNT)
+        destination = leaf_node_cell(destination_node, index_within_node)
+
+        if i == cursor.cell_num:
+            set_leaf_node_key(destination_node, index_within_node, key) # Fact check this.
+            serialize_row(value, leaf_node_value(destination_node, index_within_node))
+        elif i > cursor.cell_num:
+            destination[:LEAF_NODE_CELL_SIZE] = leaf_node_cell(old_node, i - 1)[:LEAF_NODE_CELL_SIZE]
+        else:
+            destination[:LEAF_NODE_CELL_SIZE] = leaf_node_cell(old_node, i)[:LEAF_NODE_CELL_SIZE]
+
+    set_leaf_node_num_cells(old_node, int(LEAF_NODE_LEFT_SPLIT_COUNT))
+    set_leaf_node_num_cells(new_node, int(LEAF_NODE_RIGHT_SPLIT_COUNT))
+
+    if is_node_root(old_node):
+        return create_new_root(cursor.table, new_page_num)
+    else:
+        print("Need to implement updating parent after split")
+        exit()
+
 def leaf_node_insert(cursor: Cursor, key: int, value: Row) ->None: # We have to heavily modify this function to not rely on helper functions so much.
     node = get_page(cursor.table.pager, cursor.page_num)
 
     num_cells = leaf_node_num_cells(node)
     if num_cells >= LEAF_NODE_MAX_CELLS:
         # Node full
-        print("Need to implement splitting a leaf node.")
-        exit()
+        leaf_node_split_and_insert(cursor, key, value)
+        return
 
     if cursor.cell_num < num_cells:
         src_start = get_leaf_node_cell_offset(cursor.cell_num)
@@ -463,8 +636,6 @@ def leaf_node_insert(cursor: Cursor, key: int, value: Row) ->None: # We have to 
 
         node[dest_start:dest_end] = node[src_start:src_end]
 
-    # serialize_row(value, leaf_node_value(node, cursor.cell_num))
-
     set_leaf_node_num_cells(node, num_cells + 1)
     set_leaf_node_key(node, cursor.cell_num, key)
     serialize_row(value, leaf_node_value(node, cursor.cell_num)) 
@@ -472,16 +643,14 @@ def leaf_node_insert(cursor: Cursor, key: int, value: Row) ->None: # We have to 
 def execute_insert(statement: Statement, table: Table) -> ExecuteResult:
     node = get_page(table.pager, table.root_page_num)
     num_cells = leaf_node_num_cells(node)
-    if num_cells >= LEAF_NODE_MAX_CELLS:
-        return ExecuteResult.EXECUTE_TABLE_FULL
 
     row_to_insert = statement.row_to_insert
     key_to_insert = row_to_insert.id
     cursor = table_find(table, key_to_insert)
 
     if cursor.cell_num < num_cells:
-        key_at_index = leaf_node_key(node, cursor.cell_num)
-        if key_at_index[0] == key_to_insert:
+        key_at_index = int.from_bytes(leaf_node_key(node, cursor.cell_num).tobytes(), byteorder="little")
+        if key_at_index == key_to_insert:
             return ExecuteResult.EXECUTE_DUPLICATE_KEY
 
     leaf_node_insert(cursor, row_to_insert.id, row_to_insert)
@@ -489,7 +658,7 @@ def execute_insert(statement: Statement, table: Table) -> ExecuteResult:
     return ExecuteResult.EXECUTE_SUCCESS
 
 def execute_select(statement: Statement, table: Table) -> ExecuteResult:
-    cursor = table_start(table, statement.row_to_insert)
+    cursor = table_start(table)
     row = Row()
     while not cursor.end_of_table:
         deserialize_row(cursor_value(cursor), row)
@@ -540,7 +709,7 @@ def main(*args):
                 continue
 
         state = execute_statement(statement, table)
-        match state: # execute_statemnt(statement, table):
+        match state:
             case ExecuteResult.EXECUTE_SUCCESS:
                 print("Executed.")
                 continue
