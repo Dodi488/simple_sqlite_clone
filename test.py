@@ -68,7 +68,7 @@ class TestDatabase(unittest.TestCase):
         
         result = run_script(script)
         
-        self.assertEqual(result[-2], "Need to implement searching an internal node")
+        self.assertEqual(result[-2], "Need to implement updating parent after split")
 
     def test_allows_inserting_strings_that_are_maximum_length(self):
         long_username = "a" * 32
@@ -185,9 +185,9 @@ class TestDatabase(unittest.TestCase):
             "Constants:",
             "ROW_SIZE: 291", # It should be 293.
             "COMMON_NODE_HEADER_SIZE: 6",
-            "LEAF_NODE_HEADER_SIZE: 10",
-            "LEAF_NODE_CELL_SIZE: 295", # It should be 297.
-            "LEAF_NODE_SPACE_FOR_CELLS: 4086",
+            "LEAF_NODE_HEADER_SIZE: 14",
+            "LEAF_NODE_CELL_SIZE: 295",
+            "LEAF_NODE_SPACE_FOR_CELLS: 4082",
             "LEAF_NODE_MAX_CELLS: 13",
             "db > .exit",
             ""
@@ -254,7 +254,7 @@ class TestDatabase(unittest.TestCase):
             "    - 5",
             "    - 6",
             "    - 7",
-            "  - key 1",
+            "  - key 2",
             "  - leaf (size 7)",
             "    - 8",
             "    - 9",
@@ -264,8 +264,9 @@ class TestDatabase(unittest.TestCase):
             "    - 13",
             "    - 14",
             "db > insert 15 person15 person15@example.com",
-            "Need to implement searching an internal node",
-            # "db > .exit",
+            "Executed.",
+            # "Need to implement updating parent after split",
+            "db > .exit",
             ""
         ])
 
