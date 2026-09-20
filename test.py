@@ -68,7 +68,7 @@ class TestDatabase(unittest.TestCase):
         
         result = run_script(script)
         
-        self.assertEqual(result[-2], "Need to implement updating parent after split")
+        self.assertEqual(result[-2], "Need to implement splitting internal node")
 
     def test_allows_inserting_strings_that_are_maximum_length(self):
         long_username = "a" * 32
