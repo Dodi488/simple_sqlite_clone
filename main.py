@@ -116,8 +116,8 @@ INTERNAL_NODE_HEADER_SIZE = COMMON_NODE_HEADER_SIZE + INTERNAL_NODE_NUM_KEYS_SIZ
 INTERNAL_NODE_KEY_SIZE = np.uint32(4)
 INTERNAL_NODE_CHILD_SIZE = np.uint32(4)
 INTERNAL_NODE_CELL_SIZE = INTERNAL_NODE_CHILD_SIZE + INTERNAL_NODE_KEY_SIZE
-# INTERNAL_NODE_MAX_CELLS = np.uint32(3)
-INTERNAL_NODE_MAX_CELLS = np.uint32(3)
+# INTERNAL_NODE_MAX_KEYS = np.uint32(3)
+INTERNAL_NODE_MAX_KEYS = np.uint32(3)
 
 # Leaf Node Header Layout
 
@@ -218,14 +218,21 @@ def leaf_node_value(node: np.ndarray, cell_num: int) -> np.ndarray:
     cell = leaf_node_cell(node, cell_num)
     return cell[LEAF_NODE_KEY_SIZE : LEAF_NODE_KEY_SIZE + LEAF_NODE_VALUE_SIZE]
 
+#def get_node_max_key(pager: Pager, node: Any) -> np.uint32:
+#    match get_node_type(node):
+#        case NodeType.NODE_INTERNAL:
+#            bytes = internal_node_key(node, internal_node_num_keys(node) - 1).to_bytes()
+#            return int.from_bytes(bytes, byteorder="little")
+#        case NodeType.NODE_LEAF:
+#            bytes = leaf_node_key(node, leaf_node_num_cells(node) - 1).tobytes()
+#            return int.from_bytes(bytes, byteorder="little")
+
 def get_node_max_key(pager: Pager, node: Any) -> np.uint32:
-    match get_node_type(node):
-        case NodeType.NODE_INTERNAL:
-            bytes = internal_node_key(node, internal_node_num_keys(node) - 1).to_bytes()
-            return int.from_bytes(bytes, byteorder="little")
-        case NodeType.NODE_LEAF:
-            bytes = leaf_node_key(node, leaf_node_num_cells(node) - 1).tobytes()
-            return int.from_bytes(bytes, byteorder="little")
+    if get_node_type(node) == NodeType.NODE_LEAF:
+        bytes = leaf_node_key(node, leaf_node_num_cells(node) - 1)
+        return int.from_bytes(bytes, byteorder="little")
+    right_child = get_page(pager, internal_node_right_child(node))
+    return get_node_max_key(pager, right_child)
 
 def print_constants() -> None:
     print(f"ROW_SIZE: {ROW_SIZE}")
@@ -261,7 +268,8 @@ def print_tree(pager: Pager, page_num: np.uint32, indentation_level: np.uint32) 
                     print_tree(pager, child, indentation_level + 1)
 
                     indent(indentation_level + 1)
-                    key = int.from_bytes(leaf_node_key(node, i).tobytes(), byteorder="little")
+                    #key = int.from_bytes(leaf_node_key(node, i).tobytes(), byteorder="little")
+                    key = internal_node_key(node, i)
                     print(f"- key {key}")
             child = np.uint32(internal_node_right_child(node))
             print_tree(pager, child, indentation_level + 1)
@@ -320,8 +328,11 @@ def initialize_internal_node(node: Any) -> None:
 
     # Necessary because the root page number is 0; by not initializing an internal node's right child to an invalid page number when initializing the node, we may end up with 0 as the node's right child, which makes the node a parent of the root
 
-    bytes = node[INTERNAL_NODE_RIGHT_CHILD_OFFSET : INTERNAL_NODE_RIGHT_CHILD_OFFSET + INTERNAL_NODE_RIGHT_CHILD_SIZE].tobytes()
-    return int.from_bytes(bytes, byteorder="little")
+    #bytes = node[INTERNAL_NODE_RIGHT_CHILD_OFFSET : INTERNAL_NODE_RIGHT_CHILD_OFFSET + INTERNAL_NODE_RIGHT_CHILD_SIZE].tobytes()
+    #return int.from_bytes(bytes, byteorder="little")
+
+    invalid_bytes = int(INVALID_PAGE_NUM).to_bytes(INTERNAL_NODE_RIGHT_CHILD_SIZE, byteorder="little")
+    node[INTERNAL_NODE_RIGHT_CHILD_OFFSET : INTERNAL_NODE_RIGHT_CHILD_OFFSET + INTERNAL_NODE_RIGHT_CHILD_SIZE] = np.frombuffer(invalid_bytes, dtype=np.uint8)
 
 def leaf_node_find(table: Table, page_num: np.uint32, key: np.uint32) -> Cursor:
     node = get_page(table.pager, page_num)
@@ -348,8 +359,8 @@ def leaf_node_find(table: Table, page_num: np.uint32, key: np.uint32) -> Cursor:
     return cursor
 
 def get_page(pager: Pager, page_num: int) -> Any:
-    if page_num > TABLE_MAX_PAGES:
-        print("Tried to fetch page number out of bounds. {page_num} > {TABLE_MAX_PAGES}")
+    if page_num >= TABLE_MAX_PAGES:
+        print(f"Tried to fetch page number out of bounds. {page_num} >= {TABLE_MAX_PAGES}")
         exit() # Not sure if to keep this here.
 
     if pager.pages[page_num] is None:
@@ -637,11 +648,11 @@ def create_new_root(table: Table, right_child_page_num: np.uint32) -> None:
         for i in range(internal_node_num_keys(left_child)):
             child = get_page(table.pager, internal_node_child(left_child, i))
             # *node_child(child) = left_child_page_num
-            child[PARENT_POINTER_OFFSET : PARENT_POINTER_OFFSET + PARENT_POINTER_SIZE] = np.frombuffer(left_child_page_num, dtype=np.uint8)
+            child[PARENT_POINTER_OFFSET : PARENT_POINTER_OFFSET + PARENT_POINTER_SIZE] = np.frombuffer(int(left_child_page_num).to_bytes(PARENT_POINTER_SIZE, byteorder="little"), dtype=np.uint8)
 
-    child = get_page(table.pager, internal_node_right_child(left_child))
-    # *node_child(child) = left_child_page_num
-    child[PARENT_POINTER_OFFSET : PARENT_POINTER_OFFSET + PARENT_POINTER_SIZE] = np.frombuffer(left_child_page_num, dtype=np.uint8)
+        child = get_page(table.pager, internal_node_right_child(left_child))
+        # *node_child(child) = left_child_page_num
+        child[PARENT_POINTER_OFFSET : PARENT_POINTER_OFFSET + PARENT_POINTER_SIZE] = np.frombuffer(int(left_child_page_num).to_bytes(PARENT_POINTER_SIZE, byteorder="little"), dtype=np.uint8)
 
     # Root node is a new internal node with one key and two children
     initialize_internal_node(root)
@@ -716,27 +727,27 @@ def internal_node_split_and_insert(table: Table, parent_page_num: int, child_pag
     internal_node_insert(table, new_page_num, cur_page_num)
 
     # *node_parent(cur) = new_page_num
-    cur[PARENT_POINTER_OFFSET : PARENT_POINTER_OFFSET + PARENT_POINTER_SIZE] = np.frombuffer(new_page_num, dtype=np.uint8)
+    cur[PARENT_POINTER_OFFSET : PARENT_POINTER_OFFSET + PARENT_POINTER_SIZE] = np.frombuffer(int(new_page_num).to_bytes(PARENT_POINTER_SIZE, byteorder="little"), dtype=np.uint8)
 
     # *internal_node_right_child(old_node) = INVALID_PAGE_NUM
-    old_node[PARENT_POINTER_OFFSET : PARENT_POINTER_OFFSET + PARENT_POINTER_SIZE] = np.frombuffer(INVALID_PAGE_NUM, dtype=np.uint8)
+    bytes = INVALID_PAGE_NUM.to_bytes(INTERNAL_NODE_RIGHT_CHILD_SIZE, byteorder="little")
+    old_node[INTERNAL_NODE_RIGHT_CHILD_OFFSET : INTERNAL_NODE_RIGHT_CHILD_OFFSET + INTERNAL_NODE_RIGHT_CHILD_SIZE] = np.frombuffer(bytes, dtype=np.uint8)
 
     # For each key until you get to the middle key, move the key and the child to the new node
-    for i in range(INTERNAL_NODE_MAX_CELLS, (INTERNAL_NODE_MAX_CELLS // 2), step=-1):
+    for i in range(INTERNAL_NODE_MAX_KEYS - 1, (INTERNAL_NODE_MAX_KEYS // 2), -1):
         cur_page_num = internal_node_child(old_node, i)
         cur = get_page(table.pager, cur_page_num)
 
         internal_node_insert(table, new_page_num, cur_page_num)
         # node_parent(cur) = new_page_num
-        cur[PARENT_POINTER_OFFSET : PARENT_POINTER_OFFSET + PARENT_POINTER_SIZE] = np.frombuffer(new_page_num, dtype=np.uint8)
-
+        cur[PARENT_POINTER_OFFSET : PARENT_POINTER_OFFSET + PARENT_POINTER_SIZE] = np.frombuffer(int(new_page_num).to_bytes(PARENT_POINTER_SIZE, byteorder="little"), dtype=np.uint8)
         old_num_keys -= 1
 
     # Set child before middle key, which is now the highest key, to be node's right child, and decrement number of keys
 
     # *internal_node_right_child(old_node) = *internal_node_child(old_node,*old_num_keys - 1);
-    child_page_num = internal_node_child(old_node, old_num_keys - 1)
-    old_node[INTERNAL_NODE_RIGHT_CHILD_OFFSET : INTERNAL_NODE_RIGHT_CHILD_OFFSET + INTERNAL_NODE_RIGHT_CHILD_SIZE] = np.frombuffer(int(child_page_num).to_bytes(INTERNAL_NODE_RIGHT_CHILD_SIZE, byteorder="little"), dtype=np.uint8)
+    new_right_child_page_num = internal_node_child(old_node, old_num_keys - 1)
+    old_node[INTERNAL_NODE_RIGHT_CHILD_OFFSET : INTERNAL_NODE_RIGHT_CHILD_OFFSET + INTERNAL_NODE_RIGHT_CHILD_SIZE] = np.frombuffer(int(new_right_child_page_num).to_bytes(INTERNAL_NODE_RIGHT_CHILD_SIZE, byteorder="little"), dtype=np.uint8)
 
     old_num_keys -= 1
 
@@ -748,7 +759,7 @@ def internal_node_split_and_insert(table: Table, parent_page_num: int, child_pag
 
     internal_node_insert(table, destination_page_num, child_page_num)
     # *node_parent(child) = destination_page_num
-    cur[PARENT_POINTER_OFFSET : PARENT_POINTER_OFFSET + PARENT_POINTER_SIZE] = np.frombuffer(new_page_num, dtype=np.uint8)
+    child[PARENT_POINTER_OFFSET : PARENT_POINTER_OFFSET + PARENT_POINTER_SIZE] = np.frombuffer(int(destination_page_num).to_bytes(PARENT_POINTER_SIZE, byteorder="little"), dtype=np.uint8)
 
     update_internal_node_key(parent, old_max, get_node_max_key(table.pager, old_node))
 
@@ -757,26 +768,26 @@ def internal_node_split_and_insert(table: Table, parent_page_num: int, child_pag
         # *node_parent(new_node) = *node_parent(old_node)
         new_node[PARENT_POINTER_OFFSET : PARENT_POINTER_OFFSET + PARENT_POINTER_SIZE] = old_node[PARENT_POINTER_OFFSET : PARENT_POINTER_OFFSET + PARENT_POINTER_SIZE]
 
-    old_page_num = parent_page_num
-    old_node = get_page(table.pager, parent_page_num)
-    old_max = get_node_max_key(table.pager, old_node)
+    #old_page_num = parent_page_num
+    #old_node = get_page(table.pager, parent_page_num)
+    #old_max = get_node_max_key(table.pager, old_node)
 
-    splitting_root = is_node_root(old_node)
+    #splitting_root = is_node_root(old_node)
 
-    parent = 0
-    new_node = 0
-    if splitting_root:
-        create_new_root(table, new_page_num)
-        parent = get_page(table.pager, table.root_page_num)
+    #parent = 0
+    #new_node = 0
+    #if splitting_root:
+    #    create_new_root(table, new_page_num)
+    #    parent = get_page(table.pager, table.root_page_num)
 
         # If wwe are splitting the root, we need to update old_node to point to the new root's left child, new_page_num will always will already point to the new root's right child
 
-        old_page_num = internal_node_child(parent, 0)
-        old_node = get_page(table.pager, old_page_num)
-    else:
-        parent = get_page(table.pager, node_parent(old_node))
-        new_node = get_page(table.pager, new_page_num)
-        initialize_internal_node(new_node)
+        #old_page_num = internal_node_child(parent, 0)
+        #old_node = get_page(table.pager, old_page_num)
+    #else:
+        #parent = get_page(table.pager, node_parent(old_node))
+        #new_node = get_page(table.pager, new_page_num)
+        #initialize_internal_node(new_node)
 
 def internal_node_insert(table: Table, parent_page_num: np.uint32, child_page_num: np.uint32) -> None:
     # Add a new child/key pair to parent that corresponds to child
@@ -788,8 +799,15 @@ def internal_node_insert(table: Table, parent_page_num: np.uint32, child_page_nu
 
     original_num_keys = np.uint32(internal_node_num_keys(parent))
 
-    if original_num_keys >= INTERNAL_NODE_MAX_CELLS:
+    if original_num_keys >= INTERNAL_NODE_MAX_KEYS:
         internal_node_split_and_insert(table, parent_page_num, child_page_num)
+        return
+
+    right_child_page_num = internal_node_right_child(parent)
+    # An internal node with a right child of INVALID_PAGE_NUM is empty
+    if right_child_page_num == INVALID_PAGE_NUM:
+        bytes = int(child_page_num).to_bytes(INTERNAL_NODE_RIGHT_CHILD_SIZE, byteorder="little")
+        parent[INTERNAL_NODE_RIGHT_CHILD_OFFSET : INTERNAL_NODE_RIGHT_CHILD_OFFSET + INTERNAL_NODE_RIGHT_CHILD_SIZE] = np.frombuffer(bytes, dtype=np.uint8)
         return
 
     right_child_page_num = internal_node_right_child(parent)
