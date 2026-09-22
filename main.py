@@ -138,7 +138,7 @@ LEAF_NODE_VALUE_OFFSET = LEAF_NODE_KEY_OFFSET + LEAF_NODE_KEY_SIZE
 LEAF_NODE_CELL_SIZE = LEAF_NODE_KEY_SIZE + LEAF_NODE_VALUE_SIZE
 LEAF_NODE_SPACE_FOR_CELLS = PAGE_SIZE - LEAF_NODE_HEADER_SIZE
 LEAF_NODE_MAX_CELLS = LEAF_NODE_SPACE_FOR_CELLS // LEAF_NODE_CELL_SIZE
-LEAF_NODE_RIGHT_SPLIT_COUNT = np.uint32((LEAF_NODE_MAX_CELLS + 1) / 2)
+LEAF_NODE_RIGHT_SPLIT_COUNT = np.uint32((LEAF_NODE_MAX_CELLS + 1) // 2)
 LEAF_NODE_LEFT_SPLIT_COUNT = np.uint32((LEAF_NODE_MAX_CELLS + 1) - LEAF_NODE_RIGHT_SPLIT_COUNT )
 
 def get_node_type(node: Any) -> NodeType:
@@ -203,7 +203,7 @@ def leaf_node_num_cells(node: np.ndarray) -> int:
 
 def leaf_node_next_leaf(node: Any) -> np.uint32:
     cell = node[LEAF_NODE_NEXT_LEAF_OFFSET : LEAF_NODE_NEXT_LEAF_SIZE + LEAF_NODE_NEXT_LEAF_OFFSET]
-    bytes = int.from_bytes(cell, byteorder="little")
+    bytes = int.from_bytes(cell.tobytes(), byteorder="little")
     return bytes
 
 def leaf_node_cell(node: np.ndarray, cell_num: int) -> np.ndarray:
@@ -217,15 +217,6 @@ def leaf_node_key(node: np.ndarray, cell_num: int) -> np.ndarray:
 def leaf_node_value(node: np.ndarray, cell_num: int) -> np.ndarray:
     cell = leaf_node_cell(node, cell_num)
     return cell[LEAF_NODE_KEY_SIZE : LEAF_NODE_KEY_SIZE + LEAF_NODE_VALUE_SIZE]
-
-#def get_node_max_key(pager: Pager, node: Any) -> np.uint32:
-#    match get_node_type(node):
-#        case NodeType.NODE_INTERNAL:
-#            bytes = internal_node_key(node, internal_node_num_keys(node) - 1).to_bytes()
-#            return int.from_bytes(bytes, byteorder="little")
-#        case NodeType.NODE_LEAF:
-#            bytes = leaf_node_key(node, leaf_node_num_cells(node) - 1).tobytes()
-#            return int.from_bytes(bytes, byteorder="little")
 
 def get_node_max_key(pager: Pager, node: Any) -> np.uint32:
     if get_node_type(node) == NodeType.NODE_LEAF:
@@ -486,8 +477,8 @@ def pager_open(filename: str) -> Pager:
 
 def free_table(table: Table) -> None:
     if table.pager and table.pager.pages:
-        for i in range(len(table.pages)):
-            table.pages.pages[i] = None
+        for i in range(len(table.pager.pages)):
+            table.pager.pages[i] = None
 
 def db_open(filename: str) -> Table:
     pager = pager_open(filename)
@@ -504,24 +495,25 @@ def db_open(filename: str) -> Table:
 
     return table
 
-def new_input_buffer() -> Input_Buffer:
+def new_input_buffer() -> InputBuffer:
     return InputBuffer()
 
 def print_promt() -> None:
     print("db > ", end="")
 
-def read_input(input_buffer: str) -> None:
+def read_input(input_buffer: InputBuffer) -> str:
     bytes_read = input()
 
     if not sys.stdin.isatty():
         print(bytes_read)
 
     input_buffer.buffer = bytes_read
-    input_buffer.buffer_length = len(bytes_read) - 1
-    input_buffer.input_length = len(bytes_read)
+    input_buffer.buffer_length = len(bytes_read)
+    input_buffer.input_length = len(bytes_read) + 1
 
     if len(bytes_read) <= 0:
         print("Error reading input")
+        return  ""
 
     return bytes_read
 
@@ -557,7 +549,9 @@ def db_close(table: Table) -> None:
         pager_flusher(pager, i)
         pager.pages[i] = None
 
-def do_meta_command(input_buffer: str, table: Table) -> MetaCommandResult:
+    os.close(pager.file_descriptor)
+
+def do_meta_command(input_buffer: InputBuffer, table: Table) -> MetaCommandResult:
     if input_buffer.buffer == ".exit":
         close_input_buffer(input_buffer)
         db_close(table)
@@ -574,10 +568,13 @@ def do_meta_command(input_buffer: str, table: Table) -> MetaCommandResult:
     else:
         return MetaCommandResult.META_COMMAND_UNRECOGNIZED_COMMAND
 
-def prepare_insert(input_buffer: str, statement: Statement) -> PrepareResult:
+def prepare_insert(input_buffer: InputBuffer, statement: Statement) -> PrepareResult:
     statement.type = StatementType.STATEMENT_INSERT
 
     total = input_buffer.buffer.split()
+
+    if len(total) != 4:
+        return PrepareResult.PREPARE_SYNTAX_ERROR
 
     keyword = total[0]
     id_string = total[1]
@@ -599,7 +596,7 @@ def prepare_insert(input_buffer: str, statement: Statement) -> PrepareResult:
         return PrepareResult.PREPARE_STRING_TOO_LONG
 
     if len(email) > COLUMN_EMAIL_SIZE:
-        return PREPARE_STRING_TOO_LONG
+        return PrepareResult.PREPARE_STRING_TOO_LONG
 
     statement.row_to_insert.id = id
     statement.row_to_insert.username = username
@@ -607,7 +604,7 @@ def prepare_insert(input_buffer: str, statement: Statement) -> PrepareResult:
 
     return PrepareResult.PREPARE_SUCCESS
 
-def prepare_statement(input_buffer: str, statement: Statement) -> PrepareResult:
+def prepare_statement(input_buffer: InputBuffer, statement: Statement) -> PrepareResult:
     if input_buffer.buffer.split()[0] == "insert":
         return prepare_insert(input_buffer, statement)
 
@@ -742,6 +739,7 @@ def internal_node_split_and_insert(table: Table, parent_page_num: int, child_pag
         # node_parent(cur) = new_page_num
         cur[PARENT_POINTER_OFFSET : PARENT_POINTER_OFFSET + PARENT_POINTER_SIZE] = np.frombuffer(int(new_page_num).to_bytes(PARENT_POINTER_SIZE, byteorder="little"), dtype=np.uint8)
         old_num_keys -= 1
+        old_node[INTERNAL_NODE_NUM_KEYS_OFFSET : INTERNAL_NODE_NUM_KEYS_OFFSET + INTERNAL_NODE_NUM_KEYS_SIZE] = np.frombuffer(int(old_num_keys).to_bytes(INTERNAL_NODE_NUM_KEYS_SIZE, byteorder="little"), dtype=np.uint8)
 
     # Set child before middle key, which is now the highest key, to be node's right child, and decrement number of keys
 
@@ -750,6 +748,7 @@ def internal_node_split_and_insert(table: Table, parent_page_num: int, child_pag
     old_node[INTERNAL_NODE_RIGHT_CHILD_OFFSET : INTERNAL_NODE_RIGHT_CHILD_OFFSET + INTERNAL_NODE_RIGHT_CHILD_SIZE] = np.frombuffer(int(new_right_child_page_num).to_bytes(INTERNAL_NODE_RIGHT_CHILD_SIZE, byteorder="little"), dtype=np.uint8)
 
     old_num_keys -= 1
+    old_node[INTERNAL_NODE_NUM_KEYS_OFFSET : INTERNAL_NODE_NUM_KEYS_OFFSET + INTERNAL_NODE_NUM_KEYS_SIZE] = np.frombuffer(int(old_num_keys).to_bytes(INTERNAL_NODE_NUM_KEYS_SIZE, byteorder="little"), dtype=np.uint8)
 
     # Determine which of the two nodes after the split should contain the child to be inserted, and insert the child
 
@@ -768,27 +767,6 @@ def internal_node_split_and_insert(table: Table, parent_page_num: int, child_pag
         # *node_parent(new_node) = *node_parent(old_node)
         new_node[PARENT_POINTER_OFFSET : PARENT_POINTER_OFFSET + PARENT_POINTER_SIZE] = old_node[PARENT_POINTER_OFFSET : PARENT_POINTER_OFFSET + PARENT_POINTER_SIZE]
 
-    #old_page_num = parent_page_num
-    #old_node = get_page(table.pager, parent_page_num)
-    #old_max = get_node_max_key(table.pager, old_node)
-
-    #splitting_root = is_node_root(old_node)
-
-    #parent = 0
-    #new_node = 0
-    #if splitting_root:
-    #    create_new_root(table, new_page_num)
-    #    parent = get_page(table.pager, table.root_page_num)
-
-        # If wwe are splitting the root, we need to update old_node to point to the new root's left child, new_page_num will always will already point to the new root's right child
-
-        #old_page_num = internal_node_child(parent, 0)
-        #old_node = get_page(table.pager, old_page_num)
-    #else:
-        #parent = get_page(table.pager, node_parent(old_node))
-        #new_node = get_page(table.pager, new_page_num)
-        #initialize_internal_node(new_node)
-
 def internal_node_insert(table: Table, parent_page_num: np.uint32, child_page_num: np.uint32) -> None:
     # Add a new child/key pair to parent that corresponds to child
 
@@ -804,18 +782,14 @@ def internal_node_insert(table: Table, parent_page_num: np.uint32, child_page_nu
         return
 
     right_child_page_num = internal_node_right_child(parent)
+
     # An internal node with a right child of INVALID_PAGE_NUM is empty
     if right_child_page_num == INVALID_PAGE_NUM:
+        #bytes = int(child_page_num).to_bytes(INTERNAL_NODE_NUM_KEYS_SIZE, byteorder="little")
+        #parent[INTERNAL_NODE_NUM_KEYS_OFFSET : INTERNAL_NODE_NUM_KEYS_OFFSET + INTERNAL_NODE_NUM_KEYS_SIZE] = np.frombuffer(bytes, dtype=np.uint8)
         bytes = int(child_page_num).to_bytes(INTERNAL_NODE_RIGHT_CHILD_SIZE, byteorder="little")
         parent[INTERNAL_NODE_RIGHT_CHILD_OFFSET : INTERNAL_NODE_RIGHT_CHILD_OFFSET + INTERNAL_NODE_RIGHT_CHILD_SIZE] = np.frombuffer(bytes, dtype=np.uint8)
         return
-
-    right_child_page_num = internal_node_right_child(parent)
-
-    # An internal node with a right child of INVALID_PAGE_NUM is empty
-    if right_child_page_num == INVALID_PAGE_NUM:
-        bytes = int(child_page_num).to_bytes(INTERNAL_NODE_NUM_KEYS_SIZE, byteorder="little")
-        parent[INTERNAL_NODE_NUM_KEYS_OFFSET : INTERNAL_NODE_NUM_KEYS_OFFSET + INTERNAL_NODE_NUM_KEYS_OFFSET] = np.frombuffer(bytes, dtype=np.uint8)
 
     right_child = get_page(table.pager, right_child_page_num)
 
@@ -862,9 +836,6 @@ def update_internal_node_key(node: Any, old_key: np.uint32, new_key: np.uint32) 
     cell_offset = INTERNAL_NODE_HEADER_SIZE + (old_child_index * INTERNAL_NODE_CELL_SIZE)
     key_offset = cell_offset + INTERNAL_NODE_CHILD_SIZE
     # *internal_node_key(node, old_child_index_ = new_index
-    # internal_node_cell_value = internal_node_cell(node, old_child_index)
-    # internal_node_cell_value[INTERNAL_NODE_CHILD_SIZE : INTERNAL_NODE_CHILD_SIZE + INTERNAL_NODE_CHILD_OFFSET] = np.frombuffer(new_key, dtype=np.uint8)
-
     bytes = int(new_key).to_bytes(INTERNAL_NODE_KEY_SIZE, byteorder="little")
     node[key_offset : key_offset + INTERNAL_NODE_KEY_SIZE] = np.frombuffer(bytes, dtype=np.uint8)
 
@@ -874,7 +845,7 @@ def leaf_node_split_and_insert(cursor: Cursor, key: np.uint32, value: Row) -> No
     # Update parent or create a new parent.
 
     old_node = get_page(cursor.table.pager, cursor.page_num)
-    old_max = np.uint32(get_node_max_key(cursor.table.pager, old_node))# set_node_max_key(old_node))
+    old_max = np.uint32(get_node_max_key(cursor.table.pager, old_node))
     new_page_num = np.uint32(get_unused_page_num(cursor.table.pager))
     new_node = get_page(cursor.table.pager, new_page_num)
     initialize_leaf_node(new_node)
@@ -978,6 +949,10 @@ def execute_statement(statement: Statement, table: Table) -> ExecuteResult:
             return execute_select(statement, table)
 
 def main(*args):
+    if len(sys.argv) < 2:
+        print("Must supply a database filename.")
+        exit()
+
     filename = sys.argv[1]
     table = db_open(filename)
 
@@ -985,6 +960,9 @@ def main(*args):
     while True:
         print_promt()
         read_input(input_buffer)
+
+        if input_buffer.buffer == "" or input_buffer.buffer[0] == " ":
+            continue
 
         if input_buffer.buffer[0] == ".":
             match do_meta_command(input_buffer, table):
